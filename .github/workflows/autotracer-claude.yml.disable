@@ -1,11 +1,11 @@
-# AutoTracer Automatic Workflow (Optional)
-name: AutoTracer Automatic Analysis
+# AutoTracer Claude Workflow - Interactive Mode
+name: AutoTracer Claude Analysis
 
 on:
-  push:
-    branches: [ main, develop ]
+  issue_comment:
+    types: [created]
   pull_request:
-    branches: [ main, develop ]
+    types: [opened, synchronize]
 
 jobs:
   autotracer-analysis:
