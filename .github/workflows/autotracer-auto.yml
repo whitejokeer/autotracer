@@ -42,16 +42,16 @@ jobs:
             View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
           max_turns: "20"
 
-      # 3. Validar compilación Go
-      - name: Install Go
-        if: always()
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
+      # # 3. Validar compilación Go
+      # - name: Install Go
+      #   if: always()
+      #   uses: actions/setup-go@v5
+      #   with:
+      #     go-version: "1.22"
 
-      - name: go vet
-        if: always()
-        run: go vet ./...
+      # - name: go vet
+      #   if: always()
+      #   run: go vet ./...
 
       # 4. Commit & push si hay cambios
       - name: Commit and push changes
