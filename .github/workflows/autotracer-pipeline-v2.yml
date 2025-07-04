@@ -13,9 +13,17 @@ permissions:
   contents: write
   pull-requests: write
   id-token: write
+# ─────────  PHASE 0  ─────────
+jobs:
+  setup-otel:
+    name: 🛠️ Phase 0 – Setup OpenTelemetry
+    uses: ./.github/workflows/00-setup-otel.yml
+    with:
+      trigger_ref: ${{ github.ref }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
 # ────────────────  PHASE 1  ────────────────
-jobs:
   analyze-flows:
     name: 🔍 Phase 1 – Analyze Business Flows
     if: >
