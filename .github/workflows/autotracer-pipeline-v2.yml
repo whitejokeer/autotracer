@@ -1,5 +1,4 @@
-# .github/workflows/autotracer-pipeline.yml
-name: AutoTracer Pipeline v2 (solo análisis de flujos)
+name: AutoTracer Pipeline v2
 
 on:
   push:
@@ -15,20 +14,53 @@ permissions:
   pull-requests: write
   id-token: write
 
+# ────────────────  PHASE 1  ────────────────
 jobs:
-  # ========================================================================
-  # PHASE 1 (ÚNICA): Analyze Business Flows
-  # ========================================================================
   analyze-flows:
     name: 🔍 Phase 1 – Analyze Business Flows
-    # Condiciones para disparar el análisis
     if: >
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer')) ||
       github.event_name == 'pull_request' ||
       github.event_name == 'push' ||
       github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/01-analyze-business-flows.yml   # ← llamada reutilizable
+    uses: ./.github/workflows/01-analyze-business-flows.yml
     with:
-      trigger_ref: ${{ github.ref }}                         # referencia que se desea analizar
+      trigger_ref: ${{ github.ref }}
     secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}     # clave necesaria
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# ────────────────  PHASE 2  ────────────────
+  instrument-flows:
+    name: 🎯 Phase 2 – Instrument Business Flows
+    needs: analyze-flows
+    if: needs.analyze-flows.outputs.has-flows == 'true'
+    uses: ./.github/workflows/02-instrument-business-flows.yml
+    with:
+      trigger_ref: ${{ github.ref }}
+      matrix: ${{ needs.analyze-flows.outputs.matrix }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# ────────────────  PHASE 3  ────────────────
+  compile-and-fix:
+    name: 🔧 Phase 3 – Compile & Fix
+    needs: [analyze-flows, instrument-flows]
+    if: needs.analyze-flows.outputs.has-flows == 'true'
+    uses: ./.github/workflows/03-compile-fix.yml
+    with:
+      trigger_ref: ${{ github.ref }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+# ────────────────  PHASE 4  ────────────────
+  finalize:
+    name: 📝 Phase 4 – Finalize & Summary
+    needs: [analyze-flows, instrument-flows, compile-and-fix]
+    if: always() && needs.analyze-flows.outputs.has-flows == 'true'
+    uses: ./.github/workflows/04-finalize-summary.yml
+    with:
+      trigger_ref: ${{ github.ref }}
+      compilation-success: ${{ needs.compile-and-fix.outputs.compilation-success == 'true' }}
+      fixes-applied: ${{ needs.compile-and-fix.outputs.fixes-applied }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
