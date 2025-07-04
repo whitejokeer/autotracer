@@ -1,0 +1,143 @@
+name: "02 - Instrument Business Flows"
+
+on:
+  workflow_call:
+    inputs:
+      trigger_ref:
+        description: 'Git reference to checkout'
+        required: false
+        type: string
+        default: ''
+      matrix:
+        description: 'Matrix of flows to instrument'
+        required: true
+        type: string
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  instrument:
+    name: 🎯 Instrument Flow
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJson(inputs.matrix) }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.trigger_ref || github.ref }}
+
+      - name: Download flows configuration
+        uses: actions/download-artifact@v4
+        with:
+          name: flows-config
+
+      - name: Validate flow configuration
+        id: validate
+        run: |
+          if [ -f "flows.json" ]; then
+            # Check if the flow exists in the configuration
+            if jq -e --arg flow "${{ matrix.flow }}" '.flows[] | select(.name == $flow)' flows.json >/dev/null; then
+              echo "✅ Flow '${{ matrix.flow }}' found in configuration"
+              
+              # Extract flow details
+              jq -r --arg flow "${{ matrix.flow }}" '.flows[] | select(.name == $flow) | 
+                "FLOW_CRITICALITY=" + .criticality + "\n" +
+                "FLOW_DESCRIPTION=" + .description + "\n" +
+                "FLOW_FILES=" + ([.files[]? // empty] | join(","))' flows.json >> $GITHUB_ENV
+              
+              echo "flow-exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Flow '${{ matrix.flow }}' not found in configuration"
+              echo "flow-exists=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "❌ flows.json not found"
+            echo "flow-exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Instrument flow ${{ matrix.flow }}
+        if: steps.validate.outputs.flow-exists == 'true'
+        id: instrument
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/02-instrument-flow.md
+          prompt_vars: |
+            FLOW_NAME=${{ matrix.flow }}
+            FLOW_CRITICALITY=${{ env.FLOW_CRITICALITY }}
+            FLOW_DESCRIPTION=${{ env.FLOW_DESCRIPTION }}
+            FLOW_FILES=${{ env.FLOW_FILES }}
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "30"
+
+      - name: Validate instrumentation
+        if: steps.instrument.outcome == 'success'
+        id: validate-instrumentation
+        run: |
+          # Check if Go files were modified
+          if find . -name "*.go" -newer flows.json 2>/dev/null | grep -q .; then
+            echo "✅ Go files were modified - instrumentation likely applied"
+            echo "instrumentation-applied=true" >> $GITHUB_OUTPUT
+            
+            # Count modified Go files
+            MODIFIED_FILES=$(find . -name "*.go" -newer flows.json 2>/dev/null | wc -l)
+            echo "📊 Modified $MODIFIED_FILES Go files for flow '${{ matrix.flow }}'" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ No Go files appear to have been modified"
+            echo "instrumentation-applied=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for required imports
+        if: steps.validate-instrumentation.outputs.instrumentation-applied == 'true'
+        run: |
+          # Check if OpenTelemetry imports were added
+          if grep -r "go.opentelemetry.io/otel" --include="*.go" . >/dev/null 2>&1; then
+            echo "✅ OpenTelemetry imports found"
+            echo "## 📦 OpenTelemetry Integration" >> $GITHUB_STEP_SUMMARY
+            echo "OpenTelemetry imports have been added to the codebase." >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ No OpenTelemetry imports found - instrumentation may be incomplete"
+            echo "## ⚠️ Warning" >> $GITHUB_STEP_SUMMARY
+            echo "No OpenTelemetry imports detected. Instrumentation may be incomplete." >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload instrumented code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-${{ matrix.flow }}
+          path: |
+            **/*.go
+            go.mod
+            go.sum
+          retention-days: 1
+
+      - name: Upload instrumentation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumentation-logs-${{ matrix.flow }}
+          path: |
+            *.log
+            *.txt
+          retention-days: 1
+          if-no-files-found: ignore
+
+      - name: Flow summary
+        if: always()
+        run: |
+          echo "## 🎯 Flow: ${{ matrix.flow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Criticality:** ${{ env.FLOW_CRITICALITY }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Description:** ${{ env.FLOW_DESCRIPTION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.instrument.outcome }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Files:** ${{ env.FLOW_FILES }}" >> $GITHUB_STEP_SUMMARY

@@ -1,0 +1,34 @@
+# .github/workflows/autotracer-pipeline.yml
+name: AutoTracer Pipeline v2 (solo análisis de flujos)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch: {}
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # ========================================================================
+  # PHASE 1 (ÚNICA): Analyze Business Flows
+  # ========================================================================
+  analyze-flows:
+    name: 🔍 Phase 1 – Analyze Business Flows
+    # Condiciones para disparar el análisis
+    if: >
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer')) ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch'
+    uses: ./.github/workflows/01-analyze-business-flows.yml   # ← llamada reutilizable
+    with:
+      trigger_ref: ${{ github.ref }}                         # referencia que se desea analizar
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}     # clave necesaria
