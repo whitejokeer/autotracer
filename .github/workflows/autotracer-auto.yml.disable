@@ -1,14 +1,15 @@
 # .github/workflows/autotracer.yml
-name: AutoTracer Automatic Analysis
+name: AutoTracer Automatic Analysis (DISABLED - BACKUP)
 
 on:
-  push:
-    branches: [main, develop]
-  pull_request:
-    branches: [main, develop]
-  workflow_dispatch: {}
-  issue_comment:
-    types: [created]
+  # DISABLED: Replaced by autotracer-pipeline.yml
+  # push:
+  #   branches: [main, develop]
+  # pull_request:
+  #   branches: [main, develop]
+  workflow_dispatch: {}  # Keep manual trigger for backup
+  # issue_comment:
+  #   types: [created]
 
 jobs:
   autotracer-analysis:
