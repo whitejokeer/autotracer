@@ -44,7 +44,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: .github/prompts/01-analyze-flows.md
           allowed_tools: |
-            View,Glob,Grep,LS,Read,Write,BatchTool
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
           max_turns: "25"
 
       - name: Validate flows.json

@@ -77,7 +77,7 @@ jobs:
             FLOW_DESCRIPTION=${{ env.FLOW_DESCRIPTION }}
             FLOW_FILES=${{ env.FLOW_FILES }}
           allowed_tools: |
-            View,Read,Edit,MultiEdit,Write,BatchTool
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
           max_turns: "30"
 
       - name: Validate instrumentation

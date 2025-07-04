@@ -92,7 +92,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: .github/prompts/04-generate-summary.md
           allowed_tools: |
-            View,Read,Write,BatchTool
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
           max_turns: "20"
 
       - name: Validate summary generation
