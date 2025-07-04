@@ -4,13 +4,10 @@ on:
   workflow_call:
     inputs:
       trigger_ref:
-        description: "Git reference to checkout"
-        required: false
         type: string
         default: ""
     outputs:
       otel-ready:
-        description: "Whether OTel bootstrap exists after this step"
         value: ${{ jobs.setup.outputs.otel-ready }}
     secrets:
       ANTHROPIC_API_KEY:
@@ -33,33 +30,67 @@ jobs:
         with:
           ref: ${{ inputs.trigger_ref || github.ref }}
 
+      # ───────────────────────────────────────────────
+      # 1. Detect or create go.mod
+      # ───────────────────────────────────────────────
+      - name: Detect go.mod (or init)
+        id: gomod
+        run: |
+          set -e
+          ROOT=$(pwd)
+          MODFILE=$(find "$ROOT" -name go.mod | head -n 1 || true)
+
+          if [ -z "$MODFILE" ]; then
+            echo "⚠️ No go.mod found — initializing minimal module at repo root"
+            go mod init autotracer.local
+            MODDIR="$ROOT"
+          else
+            MODDIR=$(dirname "$MODFILE")
+            echo "✅ Found go.mod at $MODFILE"
+          fi
+
+          echo "MODDIR=$MODDIR" >> $GITHUB_ENV
+          echo "moddir=$MODDIR" >> $GITHUB_OUTPUT
+
+      # ───────────────────────────────────────────────
+      # 2. Check if OTEL already present
+      # ───────────────────────────────────────────────
       - name: Detect existing OTel bootstrap
         id: detect
         run: |
-          if grep -q "go.opentelemetry.io/otel" go.mod 2>/dev/null; then
-            echo "OTEL_FOUND=true" >> $GITHUB_ENV
+          if grep -R --max-depth=1 -q "go.opentelemetry.io/otel" "$MODDIR/go.mod"; then
+            echo "OTEL_FOUND=true"  >> $GITHUB_ENV
             echo "otel-ready=true"  >> $GITHUB_OUTPUT
           else
             echo "OTEL_FOUND=false" >> $GITHUB_ENV
             echo "otel-ready=false" >> $GITHUB_OUTPUT
           fi
 
-      - name: Claude – create or update OTel bootstrap
+      # ───────────────────────────────────────────────
+      # 3. Ask Claude to create/update bootstrap (only if missing)
+      # ───────────────────────────────────────────────
+      - name: Claude – bootstrap OpenTelemetry
         if: env.OTEL_FOUND == 'false'
-        id: claude-otel
         uses: anthropics/claude-code-base-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt_file: .github/prompts/00-setup-otel.md
+          prompt_vars: |
+            MODULE_DIR=${{ steps.gomod.outputs.moddir }}
           allowed_tools: |
             View,Glob,Grep,LS,Read,Edit,Write,MultiEdit,BatchTool
           max_turns: "15"
 
-      - name: Go mod tidy (ensure deps)
-        if: env.OTEL_FOUND == 'false'
-        run: |
-          go mod tidy
+      # ───────────────────────────────────────────────
+      # 4. Tidy dependencies in the correct folder
+      # ───────────────────────────────────────────────
+      - name: Go mod tidy
+        working-directory: ${{ steps.gomod.outputs.moddir }}
+        run: go mod tidy
 
+      # ───────────────────────────────────────────────
+      # 5. Upload artefacts
+      # ───────────────────────────────────────────────
       - name: Upload OTel artefacts
         uses: actions/upload-artifact@v4
         if: always()
