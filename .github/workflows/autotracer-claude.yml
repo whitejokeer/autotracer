@@ -11,13 +11,17 @@ jobs:
   autotracer-analysis:
     if: github.event.issue_comment.body == '/autotracer' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         
       - name: Run AutoTracer Analysis
-        uses: anthropics/claude-3-5-sonnet@v1
+        uses: anthropics/claude-code-action@beta
         with:
           claude-project: ${{ secrets.CLAUDE_PROJECT_ID }}
           prompt-file: .github/prompts/autotracer_prompt.md
