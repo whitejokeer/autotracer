@@ -9,7 +9,10 @@ on:
 
 jobs:
   autotracer-analysis:
-    if: github.event.issue_comment.body == '/autotracer' || github.event_name == 'pull_request'
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer')) ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -19,20 +22,13 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
         
       - name: Run AutoTracer Analysis
         uses: anthropics/claude-code-base-action@beta
         with:
-          claude-project: ${{ secrets.ANTHROPIC_API_KEY }}
-          prompt-file: .github/prompts/autotracer_prompt.md
-          files: |
-            **/*.go
-            **/*.py
-            **/*.js
-            **/*.ts
-            **/*.java
-            **/*.c
-            **/*.cpp
-            **/*.cs
-            **/*.rb
-            **/*.php
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/autotracer_prompt.md
+          allowed_tools: "View,GrepTool,BatchTool,EditTool,CreateFile"
+          max_turns: "20"
