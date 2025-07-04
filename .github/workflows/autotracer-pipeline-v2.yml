@@ -26,6 +26,7 @@ jobs:
 # ────────────────  PHASE 1  ────────────────
   analyze-flows:
     name: 🔍 Phase 1 – Analyze Business Flows
+    needs: setup-otel
     if: >
       (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer')) ||
       github.event_name == 'pull_request' ||
