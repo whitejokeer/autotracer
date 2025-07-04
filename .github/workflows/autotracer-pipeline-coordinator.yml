@@ -32,7 +32,6 @@ jobs:
       trigger_ref: ${{ github.event.pull_request.head.ref || github.ref }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Phase 2: Instrument Flows in Parallel
   instrument-flows:
@@ -45,7 +44,6 @@ jobs:
       matrix: ${{ needs.analyze-flows.outputs.matrix }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Phase 3: Compile and Fix
   compile-and-fix:
@@ -57,7 +55,6 @@ jobs:
       trigger_ref: ${{ github.event.pull_request.head.ref || github.ref }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # Phase 4: Finalize and Summary
   finalize:
@@ -71,7 +68,6 @@ jobs:
       fixes-applied: ${{ needs.compile-and-fix.outputs.fixes-applied }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ========================================================================
   # SUMMARY: Overall pipeline status
