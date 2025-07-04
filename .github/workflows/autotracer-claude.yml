@@ -21,7 +21,7 @@ jobs:
         uses: actions/checkout@v4
         
       - name: Run AutoTracer Analysis
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-base-action@beta
         with:
           claude-project: ${{ secrets.CLAUDE_PROJECT_ID }}
           prompt-file: .github/prompts/autotracer_prompt.md
