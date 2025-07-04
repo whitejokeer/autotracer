@@ -23,7 +23,7 @@ jobs:
       - name: Run AutoTracer Analysis
         uses: anthropics/claude-code-base-action@beta
         with:
-          claude-project: ${{ secrets.CLAUDE_PROJECT_ID }}
+          claude-project: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt-file: .github/prompts/autotracer_prompt.md
           files: |
             **/*.go
