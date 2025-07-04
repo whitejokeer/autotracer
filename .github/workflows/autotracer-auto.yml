@@ -9,26 +9,47 @@ on:
 
 jobs:
   autotracer-analysis:
+    if: |
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer')) ||
+      github.event_name == 'pull_request' ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
     
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
         
       - name: Run AutoTracer Analysis
-        uses: anthropics/claude-3-5-sonnet@v1
+        uses: anthropics/claude-code-base-action@beta
         with:
-          claude-project: ${{ secrets.CLAUDE_PROJECT_ID }}
-          prompt-file: .github/prompts/autotracer_prompt.md
-          files: |
-            **/*.go
-            **/*.py
-            **/*.js
-            **/*.ts
-            **/*.java
-            **/*.c
-            **/*.cpp
-            **/*.cs
-            **/*.rb
-            **/*.php
-          auto-comment: true
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+           with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: |
+            Analyze all Go files in this repository and add OpenTelemetry instrumentation.
+            
+            INSTRUCTIONS:
+            1. Use the Glob tool to find all .go files
+            2. For each Go file, identify business logic functions:
+              - Functions that process payments (ProcessPayment, ProcessOrder, etc.)
+              - Functions that validate business rules (ValidateOrder, CheckInventory, etc.)
+              - Functions that calculate business values (CalculatePrice, ComputeFees, etc.)
+              - Skip: getters, setters, constructors, middleware
+            
+            3. Add OpenTelemetry instrumentation to these functions:
+              - Add necessary imports at the top of the file
+              - Create spans with business-relevant attributes
+              - Handle errors with span.RecordError()
+              - Use defer span.End()
+            
+            4. Create instrumentation_report.md with a summary of changes
+            
+            START NOW - Don't ask questions, just execute the instrumentation.
+          allowed_tools: "Glob,Grep,Read,Edit,MultiEdit,Write"
+          max_turns: "20"
