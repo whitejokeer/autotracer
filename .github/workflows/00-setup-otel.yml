@@ -1,0 +1,71 @@
+name: "00 - Setup OpenTelemetry"
+
+on:
+  workflow_call:
+    inputs:
+      trigger_ref:
+        description: "Git reference to checkout"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      otel-ready:
+        description: "Whether OTel bootstrap exists after this step"
+        value: ${{ jobs.setup.outputs.otel-ready }}
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  setup:
+    name: 🛠️ Setup OpenTelemetry
+    runs-on: ubuntu-latest
+    outputs:
+      otel-ready: ${{ steps.detect.outputs.otel-ready }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.trigger_ref || github.ref }}
+
+      - name: Detect existing OTel bootstrap
+        id: detect
+        run: |
+          if grep -q "go.opentelemetry.io/otel" go.mod 2>/dev/null; then
+            echo "OTEL_FOUND=true" >> $GITHUB_ENV
+            echo "otel-ready=true"  >> $GITHUB_OUTPUT
+          else
+            echo "OTEL_FOUND=false" >> $GITHUB_ENV
+            echo "otel-ready=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Claude – create or update OTel bootstrap
+        if: env.OTEL_FOUND == 'false'
+        id: claude-otel
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/00-setup-otel.md
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,Write,MultiEdit,BatchTool
+          max_turns: "15"
+
+      - name: Go mod tidy (ensure deps)
+        if: env.OTEL_FOUND == 'false'
+        run: |
+          go mod tidy
+
+      - name: Upload OTel artefacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: otel-setup
+          path: |
+            otel-config.yaml
+            **/otel.go
+          retention-days: 3
