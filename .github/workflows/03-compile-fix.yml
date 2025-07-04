@@ -108,20 +108,20 @@ jobs:
               cat compile.log
               echo "::endgroup::"
               if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
-                cat > compile_errors.txt << 'EOF'
-COMPILATION ERRORS - Attempt $ATTEMPT
-=====================================
-
-$(cat compile.log)
-
-Please analyze these compilation errors and fix them systematically.
-Focus on:
-1. Missing imports
-2. Function signature mismatches
-3. Type errors
-4. Unused variables
-5. Package-level issues
-EOF
+                {
+                  echo "COMPILATION ERRORS - Attempt $ATTEMPT"
+                  echo "====================================="
+                  echo ""
+                  cat compile.log
+                  echo ""
+                  echo "Please analyze these compilation errors and fix them systematically."
+                  echo "Focus on:"
+                  echo "1. Missing imports"
+                  echo "2. Function signature mismatches"
+                  echo "3. Type errors"
+                  echo "4. Unused variables"
+                  echo "5. Package-level issues"
+                } > compile_errors.txt
               fi
             fi
           done
