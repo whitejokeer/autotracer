@@ -1,34 +1,50 @@
-# AutoTracer Automatic Workflow (Optional)
+# .github/workflows/autotracer.yml
 name: AutoTracer Automatic Analysis
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
+  workflow_dispatch: {}
+  issue_comment:
+    types: [created]
 
 jobs:
   autotracer-analysis:
+    # Ejecuta sólo cuando el evento coincide con las condiciones
+    if: >
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer'))
+      || github.event_name == 'pull_request'
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    
+
+    permissions:
+      contents: write          # crear commits
+      pull-requests: write     # comentar PRs
+      id-token: write          # OIDC (opcional para tus pasos)
+
     steps:
+      # 1. Checkout
       - name: Checkout code
         uses: actions/checkout@v4
-        
-      - name: Run AutoTracer Analysis
-        uses: anthropics/claude-3-5-sonnet@v1
         with:
-          claude-project: ${{ secrets.CLAUDE_PROJECT_ID }}
-          prompt-file: .github/prompts/autotracer_prompt.md
-          files: |
-            **/*.go
-            **/*.py
-            **/*.js
-            **/*.ts
-            **/*.java
-            **/*.c
-            **/*.cpp
-            **/*.cs
-            **/*.rb
-            **/*.php
-          auto-comment: true
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      # 2. Ejecutar AutoTracer (Claude Code)
+      - name: Run AutoTracer Analysis
+        id: autotracer          # ← añadimos un id para usar su salida si lo deseas
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/autotracer_prompt.md
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "20"
+
+      # 3. Verificación rápida de compilación Go (opcional pero recomendable)
+      - name: Set up Go
+        if: always()
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
