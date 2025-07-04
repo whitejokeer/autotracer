@@ -1,0 +1,556 @@
+name: AutoTracer Pipeline v2
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch: {}
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # ========================================================================
+  # PHASE 1: Analyze Business Flows
+  # ========================================================================
+  analyze-flows:
+    name: 🔍 Phase 1 - Analyze Business Flows
+    if: >
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer'))
+      || github.event_name == 'pull_request'
+      || github.event_name == 'push'
+      || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has-flows: ${{ steps.set-matrix.outputs.has-flows }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Run business flow analysis
+        id: analyze
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/01-analyze-flows.md
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "25"
+
+      - name: Validate flows.json
+        id: validate
+        run: |
+          if [ -f "flows.json" ]; then
+            echo "✅ flows.json created successfully"
+            
+            if jq empty flows.json 2>/dev/null; then
+              echo "✅ flows.json is valid JSON"
+              
+              if jq -e '.flows | type == "array"' flows.json >/dev/null; then
+                FLOW_COUNT=$(jq -r '.flows | length' flows.json)
+                echo "✅ Found $FLOW_COUNT business flows"
+                echo "flows-found=true" >> $GITHUB_OUTPUT
+                
+                echo "## 📊 Business Flows Identified" >> $GITHUB_STEP_SUMMARY
+                jq -r '.flows[] | "- **\(.name)** (\(.criticality)) - \(.description)"' flows.json >> $GITHUB_STEP_SUMMARY
+              else
+                echo "❌ flows.json missing 'flows' array"
+                echo "flows-found=false" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "❌ flows.json is not valid JSON"
+              echo "flows-found=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "❌ flows.json not found"
+            echo "flows-found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload flows configuration
+        if: steps.validate.outputs.flows-found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flows-config
+          path: |
+            flows.json
+            docs/flows/
+          retention-days: 1
+
+      - name: Set matrix for instrumentation
+        id: set-matrix
+        run: |
+          if [ "${{ steps.validate.outputs.flows-found }}" == "true" ]; then
+            echo "has-flows=true" >> $GITHUB_OUTPUT
+            echo "matrix=$(cat flows.json | jq -c '{flow: [.flows[].name]}')" >> $GITHUB_OUTPUT
+            
+            echo "## 🎯 Instrumentation Matrix" >> $GITHUB_STEP_SUMMARY
+            echo "The following flows will be instrumented in parallel:" >> $GITHUB_STEP_SUMMARY
+            cat flows.json | jq -r '.flows[].name' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "has-flows=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"flow\": []}" >> $GITHUB_OUTPUT
+            echo "⚠️ No business flows found - skipping instrumentation phase" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ========================================================================
+  # PHASE 2: Instrument Flows (Parallel Matrix)
+  # ========================================================================
+  instrument-flows:
+    name: 🎯 Phase 2 - Instrument Flow
+    needs: analyze-flows
+    if: needs.analyze-flows.outputs.has-flows == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJson(needs.analyze-flows.outputs.matrix) }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Download flows configuration
+        uses: actions/download-artifact@v4
+        with:
+          name: flows-config
+
+      - name: Validate flow configuration
+        id: validate
+        run: |
+          if [ -f "flows.json" ]; then
+            if jq -e --arg flow "${{ matrix.flow }}" '.flows[] | select(.name == $flow)' flows.json >/dev/null; then
+              echo "✅ Flow '${{ matrix.flow }}' found in configuration"
+              
+              jq -r --arg flow "${{ matrix.flow }}" '.flows[] | select(.name == $flow) | 
+                "FLOW_CRITICALITY=" + .criticality + "\n" +
+                "FLOW_DESCRIPTION=" + .description + "\n" +
+                "FLOW_FILES=" + ([.files[]? // empty] | join(","))' flows.json >> $GITHUB_ENV
+              
+              echo "flow-exists=true" >> $GITHUB_OUTPUT
+            else
+              echo "❌ Flow '${{ matrix.flow }}' not found in configuration"
+              echo "flow-exists=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "❌ flows.json not found"
+            echo "flow-exists=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Instrument flow ${{ matrix.flow }}
+        if: steps.validate.outputs.flow-exists == 'true'
+        id: instrument
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/02-instrument-flow.md
+          prompt_vars: |
+            FLOW_NAME=${{ matrix.flow }}
+            FLOW_CRITICALITY=${{ env.FLOW_CRITICALITY }}
+            FLOW_DESCRIPTION=${{ env.FLOW_DESCRIPTION }}
+            FLOW_FILES=${{ env.FLOW_FILES }}
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "30"
+
+      - name: Upload instrumented code
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-${{ matrix.flow }}
+          path: |
+            **/*.go
+            go.mod
+            go.sum
+          retention-days: 1
+
+      - name: Flow summary
+        if: always()
+        run: |
+          echo "## 🎯 Flow: ${{ matrix.flow }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Criticality:** ${{ env.FLOW_CRITICALITY }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Description:** ${{ env.FLOW_DESCRIPTION }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ steps.instrument.outcome }}" >> $GITHUB_STEP_SUMMARY
+
+  # ========================================================================
+  # PHASE 3: Compile and Fix
+  # ========================================================================
+  compile-and-fix:
+    name: 🔧 Phase 3 - Compile & Fix
+    needs: [analyze-flows, instrument-flows]
+    if: needs.analyze-flows.outputs.has-flows == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      compilation-success: ${{ steps.final-check.outputs.success }}
+      fixes-applied: ${{ steps.compile-loop.outputs.attempts }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Download all instrumented code
+        uses: actions/download-artifact@v4
+        with:
+          pattern: instrumented-*
+          merge-multiple: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Initial dependency check
+        run: |
+          echo "## 🔍 Initial Setup" >> $GITHUB_STEP_SUMMARY
+          echo "### Go Version" >> $GITHUB_STEP_SUMMARY
+          go version >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "go.mod" ]; then
+            echo "✅ go.mod found" >> $GITHUB_STEP_SUMMARY
+            if ! go list -m go.opentelemetry.io/otel >/dev/null 2>&1; then
+              echo "📦 Adding OpenTelemetry dependencies..." >> $GITHUB_STEP_SUMMARY
+              go mod tidy
+            fi
+          else
+            echo "⚠️ No go.mod found - may need to initialize" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Compile and fix loop
+        id: compile-loop
+        run: |
+          ATTEMPT=0
+          MAX_ATTEMPTS=3
+          SUCCESS=false
+          
+          echo "## 🔧 Compilation Process" >> $GITHUB_STEP_SUMMARY
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ((ATTEMPT++))
+            echo "### Attempt $ATTEMPT" >> $GITHUB_STEP_SUMMARY
+            echo "::group::Compilation attempt $ATTEMPT"
+            
+            rm -f compile.log
+            
+            if go build ./... 2>&1 | tee compile.log; then
+              echo "✅ Compilation successful on attempt $ATTEMPT!" >> $GITHUB_STEP_SUMMARY
+              SUCCESS=true
+              echo "::endgroup::"
+              break
+            else
+              echo "❌ Compilation failed on attempt $ATTEMPT" >> $GITHUB_STEP_SUMMARY
+              echo "::endgroup::"
+              
+              cat compile.log
+              
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "🤖 Preparing to call Claude for error fixes..." >> $GITHUB_STEP_SUMMARY
+                
+                cat > compile_errors.txt << EOF
+          COMPILATION ERRORS - Attempt $ATTEMPT
+          =====================================
+          
+          $(cat compile.log)
+          
+          Please analyze these compilation errors and fix them systematically.
+          EOF
+              fi
+            fi
+          done
+          
+          echo "attempts=$ATTEMPT" >> $GITHUB_OUTPUT
+          echo "success=$SUCCESS" >> $GITHUB_OUTPUT
+          
+          if [ "$SUCCESS" = "false" ]; then
+            echo "❌ Failed to compile after $MAX_ATTEMPTS attempts" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fix compilation errors
+        if: steps.compile-loop.outputs.success == 'false'
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/03-compile-fix.md
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "25"
+
+      - name: Final compilation check
+        id: final-check
+        run: |
+          echo "## 🎯 Final Verification" >> $GITHUB_STEP_SUMMARY
+          
+          if go build ./... 2>&1 | tee final_compile.log; then
+            echo "✅ Final compilation successful!" >> $GITHUB_STEP_SUMMARY
+            echo "success=true" >> $GITHUB_OUTPUT
+            
+            echo "### Build Statistics" >> $GITHUB_STEP_SUMMARY
+            echo "- **Attempts:** ${{ steps.compile-loop.outputs.attempts }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Final Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Final compilation failed" >> $GITHUB_STEP_SUMMARY
+            echo "success=false" >> $GITHUB_OUTPUT
+            
+            echo "### Final Errors" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat final_compile.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload compilation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compilation-logs
+          path: |
+            *.log
+            *.txt
+          retention-days: 1
+
+      - name: Upload final compiled code
+        if: steps.final-check.outputs.success == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-code
+          path: |
+            **/*.go
+            go.mod
+            go.sum
+          retention-days: 1
+
+  # ========================================================================
+  # PHASE 4: Finalize and Summary
+  # ========================================================================
+  finalize:
+    name: 📝 Phase 4 - Finalize & Summary
+    needs: [analyze-flows, instrument-flows, compile-and-fix]
+    if: always() && needs.analyze-flows.outputs.has-flows == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      summary-generated: ${{ steps.generate-summary.outputs.success }}
+      changes-committed: ${{ steps.commit-changes.outputs.committed }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          merge-multiple: true
+
+      - name: Prepare summary context
+        id: prepare-context
+        run: |
+          echo "## 📋 Preparing Summary Context" >> $GITHUB_STEP_SUMMARY
+          
+          cat > summary_context.txt << EOF
+          AutoTracer Pipeline Execution Summary
+          ====================================
+          
+          Pipeline Status: ${{ needs.compile-and-fix.outputs.compilation-success == 'true' && 'SUCCESS' || 'FAILED' }}
+          Compilation Attempts: ${{ needs.compile-and-fix.outputs.fixes-applied }}
+          
+          Available Data:
+          - flows.json: $([ -f flows.json ] && echo "✅ Available" || echo "❌ Missing")
+          - docs/flows/: $([ -d docs/flows ] && echo "✅ Available ($(ls docs/flows/ 2>/dev/null | wc -l) files)" || echo "❌ Missing")
+          - Compilation logs: $([ -f compile.log ] && echo "✅ Available" || echo "❌ Missing")
+          - Instrumented code: $(find . -name "*.go" | wc -l) Go files
+          
+          Execution Context:
+          - Trigger: ${{ github.event_name }}
+          - Repository: ${{ github.repository }}
+          - Branch: ${{ github.ref }}
+          - Commit: ${{ github.sha }}
+          - Timestamp: $(date)
+          EOF
+          
+          echo "✅ Context prepared for summary generation" >> $GITHUB_STEP_SUMMARY
+
+      - name: Generate comprehensive summary
+        id: generate-summary
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/04-generate-summary.md
+          allowed_tools: |
+            View,Read,Write,BatchTool
+          max_turns: "20"
+
+      - name: Validate summary generation
+        id: validate-summary
+        run: |
+          if [ -f "INSTRUMENTATION_REPORT.md" ]; then
+            echo "✅ Summary report generated successfully" >> $GITHUB_STEP_SUMMARY
+            echo "success=true" >> $GITHUB_OUTPUT
+            
+            LINES=$(wc -l < INSTRUMENTATION_REPORT.md)
+            SIZE=$(wc -c < INSTRUMENTATION_REPORT.md)
+            echo "📊 Report: $LINES lines, $SIZE characters" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Summary report not generated" >> $GITHUB_STEP_SUMMARY
+            echo "success=false" >> $GITHUB_OUTPUT
+            
+            cat > INSTRUMENTATION_REPORT.md << EOF
+          # AutoTracer Pipeline Summary
+          
+          ## Status
+          - **Pipeline Status:** ${{ needs.compile-and-fix.outputs.compilation-success == 'true' && 'SUCCESS' || 'FAILED' }}
+          - **Compilation Attempts:** ${{ needs.compile-and-fix.outputs.fixes-applied }}
+          - **Generated:** $(date)
+          
+          ## Results
+          $([ -f flows.json ] && echo "- Business flows analyzed" || echo "- No flows analyzed")
+          $([ -f compile.log ] && echo "- Compilation attempted" || echo "- No compilation attempted")
+          $(find . -name "*.go" -newer flows.json 2>/dev/null | head -1 | grep -q . && echo "- Code instrumentation applied" || echo "- No instrumentation applied")
+          
+          ---
+          *Generated by AutoTracer Pipeline*
+          EOF
+          fi
+
+      - name: Commit changes
+        id: commit-changes
+        run: |
+          git config --local user.email "actions@github.com"
+          git config --local user.name "AutoTracer Pipeline"
+          
+          git add -A
+          
+          if git diff --cached --quiet; then
+            echo "No changes to commit" >> $GITHUB_STEP_SUMMARY
+            echo "committed=false" >> $GITHUB_OUTPUT
+          else
+            cat > commit_message.txt << EOF
+          feat: AutoTracer OpenTelemetry instrumentation
+          
+          🔍 Business Logic Analysis:
+          $([ -f flows.json ] && jq -r '.flows | length' flows.json || echo "0") flows identified and documented
+          
+          🎯 Instrumentation Applied:
+          $(find . -name "*.go" -newer flows.json 2>/dev/null | wc -l) Go files instrumented with OpenTelemetry
+          
+          🔧 Compilation Status:
+          ${{ needs.compile-and-fix.outputs.compilation-success == 'true' && '✅ Successful' || '❌ Failed' }} after ${{ needs.compile-and-fix.outputs.fixes-applied }} attempts
+          
+          📝 Documentation:
+          - Comprehensive instrumentation report generated
+          - Business flow documentation created
+          
+          Co-authored-by: AutoTracer Pipeline <actions@github.com>
+          [skip ci]
+          EOF
+            
+            git commit -F commit_message.txt
+            echo "committed=true" >> $GITHUB_OUTPUT
+            echo "✅ Changes committed successfully" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Push changes
+        if: |
+          steps.commit-changes.outputs.committed == 'true' && (
+            github.event_name == 'push' ||
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+          )
+        run: |
+          if git push; then
+            echo "✅ Changes pushed successfully" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Failed to push changes" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Comment on PR with summary
+        if: github.event_name == 'pull_request' && steps.generate-summary.outputs.success == 'true'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            
+            let summary = '## 🤖 AutoTracer Pipeline Results\n\n';
+            
+            try {
+              if (fs.existsSync('INSTRUMENTATION_REPORT.md')) {
+                const report = fs.readFileSync('INSTRUMENTATION_REPORT.md', 'utf8');
+                summary += report;
+              } else {
+                summary += '⚠️ Summary report not found, but pipeline execution details below:\n\n';
+              }
+            } catch (error) {
+              summary += '❌ Error reading summary report.\n\n';
+            }
+            
+            summary += '\n\n---\n\n';
+            summary += '### 🔧 Pipeline Execution Details\n';
+            summary += `- **Status:** ${{ needs.compile-and-fix.outputs.compilation-success == 'true' && '✅ Success' || '❌ Failed' }}\n`;
+            summary += `- **Compilation Attempts:** ${{ needs.compile-and-fix.outputs.fixes-applied }}\n`;
+            summary += `- **Trigger:** ${{ github.event_name }}\n`;
+            summary += `- **Commit:** \`${{ github.sha }}\`\n`;
+            summary += `- **Changes Committed:** ${{ steps.commit-changes.outputs.committed == 'true' && '✅ Yes' || '❌ No' }}\n`;
+            summary += `- **Timestamp:** ${new Date().toISOString()}\n`;
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: summary
+            });
+
+      - name: Upload final artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-results
+          path: |
+            INSTRUMENTATION_REPORT.md
+            *.patch
+            summary_context.txt
+            commit_message.txt
+          retention-days: 7
+
+  # ========================================================================
+  # PIPELINE SUMMARY
+  # ========================================================================
+  pipeline-summary:
+    name: 📊 Pipeline Summary
+    needs: [analyze-flows, instrument-flows, compile-and-fix, finalize]
+    if: always()
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Pipeline Status Summary
+        run: |
+          echo "## 🚀 AutoTracer Pipeline Execution Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Phase Results" >> $GITHUB_STEP_SUMMARY
+          echo "- **🔍 Analyze Flows:** ${{ needs.analyze-flows.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **🎯 Instrument Flows:** ${{ needs.instrument-flows.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **🔧 Compile & Fix:** ${{ needs.compile-and-fix.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **📝 Finalize:** ${{ needs.finalize.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Details" >> $GITHUB_STEP_SUMMARY
+          echo "- **Flows Found:** ${{ needs.analyze-flows.outputs.has-flows }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Compilation Success:** ${{ needs.compile-and-fix.outputs.compilation-success }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Summary Generated:** ${{ needs.finalize.outputs.summary-generated }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Changes Committed:** ${{ needs.finalize.outputs.changes-committed }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Execution Context" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Repository:** ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Branch:** ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Commit:** ${{ github.sha }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Timestamp:** $(date)" >> $GITHUB_STEP_SUMMARY
