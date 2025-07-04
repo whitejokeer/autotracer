@@ -1,0 +1,126 @@
+# AutoTracer Configuration
+# Este archivo controla el comportamiento de AutoTracer
+
+# Modo de operación por defecto
+mode: interactive  # interactive | automatic | manual
+
+# Configuración de instrumentación
+instrumentation:
+  # Nivel de agresividad (1-5)
+  # 1 = Muy conservador, solo business logic obvia
+  # 5 = Agresivo, instrumenta todo lo que parezca importante
+  level: 2
+  
+  # Patrones a incluir (regex)
+  include_patterns:
+    - "Process.*"
+    - "Handle.*"
+    - "Validate.*"
+    - "Calculate.*"
+    - ".*Payment.*"
+    - ".*Order.*"
+    - ".*Transaction.*"
+  
+  # Patrones a excluir (regex)
+  exclude_patterns:
+    - ".*_test\\.go$"
+    - ".*\\.pb\\.go$"  # Protocol buffers
+    - "mock_.*"
+    - "Get.*"          # Getters simples
+    - "Set.*"          # Setters simples
+    
+  # Packages a ignorar completamente
+  ignore_packages:
+    - "vendor"
+    - "third_party"
+    - "generated"
+    - "mocks"
+
+# Configuración de spans
+spans:
+  # Incluir automáticamente estos atributos si están disponibles
+  auto_attributes:
+    - "id"
+    - "user_id"
+    - "order_id"
+    - "amount"
+    - "status"
+    - "method"
+    - "type"
+  
+  # Límite de atributos por span
+  max_attributes: 20
+  
+  # Incluir stack trace en errores
+  include_stack_trace: false
+
+# Validación
+validation:
+  # Ejecutar tests después de instrumentación
+  run_tests: true
+  
+  # Timeout para tests (segundos)
+  test_timeout: 300
+  
+  # Verificar que el código compila
+  verify_build: true
+  
+  # Aplicar go fmt automáticamente
+  auto_format: true
+
+# Modo automático
+automatic:
+  # Hacer commit automáticamente
+  auto_commit: true
+  
+  # Crear issue si falla
+  create_issue_on_failure: true
+  
+  # Máximo de archivos a modificar en una ejecución
+  max_files_per_run: 10
+  
+  # Esperar entre instrumentaciones (evitar spam)
+  cooldown_minutes: 5
+
+# Reportes
+reporting:
+  # Generar reporte markdown
+  generate_report: true
+  
+  # Comentar en PR
+  comment_on_pr: true
+  
+  # Nivel de detalle (1-3)
+  detail_level: 2
+  
+  # Incluir ejemplos de código
+  include_code_examples: true
+
+# Claude Code específico
+claude:
+  # Máximo de turnos de conversación
+  max_turns: 20
+  
+  # Temperatura (0-1, más bajo = más determinístico)
+  temperature: 0.3
+  
+  # System prompt adicional
+  additional_prompt: |
+    Prioriza la seguridad y estabilidad del código.
+    Es mejor sub-instrumentar que romper funcionalidad existente.
+    
+# Integración con APMs
+integrations:
+  # OpenTelemetry
+  opentelemetry:
+    tracer_name: "business-logic"
+    
+  # Datadog (futuro)
+  datadog:
+    enabled: false
+    service_name: "my-service"
+    
+  # New Relic (futuro)
+  newrelic:
+    enabled: false
+    app_name: "My Application"
