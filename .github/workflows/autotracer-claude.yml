@@ -11,6 +11,10 @@ jobs:
   autotracer-analysis:
     if: github.event.issue_comment.body == '/autotracer' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
     
     steps:
       - name: Checkout code
