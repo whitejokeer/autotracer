@@ -38,17 +38,18 @@ test_interactive_mode() {
     git checkout -b test/autotracer-interactive-$(date +%s)
     
     # Crear código de ejemplo si no existe
-    mkdir -p internal/payment
-    if [ -f example/payment_service.go ]; then
+    # Copiar proyecto de ejemplo ecommerce para la prueba
+    if [ -d example/ecommerce ]; then
+        cp -R example/ecommerce ./ecommerce
+        echo -e "${GREEN}✓${NC} Proyecto ecommerce copiado exitosamente"
+    elif [ -f example/payment_service.go ]; then
+        # Fallback al archivo único si no existe el proyecto completo
+        mkdir -p internal/payment
         cp example/payment_service.go internal/payment/
+        echo -e "${YELLOW}!${NC} Usando archivo único payment_service.go"
     else
-        echo "package payment" > internal/payment/test_service.go
-        echo "" >> internal/payment/test_service.go
-        echo "func ProcessTestPayment(amount float64) error {" >> internal/payment/test_service.go
-        echo "    if amount <= 0 { return errors.New(\"invalid amount\") }" >> internal/payment/test_service.go
-        echo "    // TODO: Process payment" >> internal/payment/test_service.go
-        echo "    return nil" >> internal/payment/test_service.go
-        echo "}" >> internal/payment/test_service.go
+        echo -e "${RED}✗${NC} No se encontró ejemplo para test"
+        return 1
     fi
     
     git add .
@@ -57,17 +58,24 @@ test_interactive_mode() {
     
     # Crear PR
     pr_url=$(gh pr create \
-        --title "Test: AutoTracer Interactive Mode" \
-        --body "🧪 Testing AutoTracer automated instrumentation
+        --title "Test: AutoTracer E-Commerce Instrumentation" \
+        --body "🧪 Testing AutoTracer automated instrumentation on E-Commerce microservice
         
-Este PR se creó para testear el modo interactivo de AutoTracer.
-Los cambios de instrumentación aparecerán directamente en este PR.
+Este PR contiene un microservicio completo de e-commerce para testear AutoTracer.
+        
+**Estructura del proyecto:**
+- 🛒 Order Service: Gestión de pedidos
+- 💳 Payment Service: Procesamiento de pagos
+- 📦 Inventory Service: Control de inventario
+- 👤 User Service: Autenticación y perfiles
+- 📧 Notification Service: Notificaciones async
         
 **Qué esperar:**
-- AutoTracer analizará los archivos Go
+- AutoTracer analizará todos los servicios
+- Identificará flujos de negocio críticos
 - Añadirá spans de OpenTelemetry
-- Los cambios aparecerán en el diff
-- Un comentario resumirá los cambios" \
+- Propagará contexto entre servicios
+- Un comentario resumirá todos los cambios" \
         --base main \
         --draft)
         
