@@ -36,6 +36,41 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.ref || github.ref }}
 
+      - name: Validate required secrets and files
+        run: |
+          set -e
+          echo "## 🔍 Pre-flight Validation" >> $GITHUB_STEP_SUMMARY
+          
+          # Check ANTHROPIC_API_KEY secret
+          if [ -z "${{ secrets.ANTHROPIC_API_KEY }}" ]; then
+            echo "❌ ANTHROPIC_API_KEY secret is missing!" >> $GITHUB_STEP_SUMMARY
+            echo "❌ Required secret ANTHROPIC_API_KEY is not set."
+            echo "Go to: Settings → Secrets and variables → Actions"
+            exit 1
+          else
+            echo "✅ ANTHROPIC_API_KEY secret is configured" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Check required prompt files
+          REQUIRED_FILES=(
+            ".github/prompts/01-analyze-flows.md"
+            ".github/prompts/02-instrument-flow.md"
+            ".github/prompts/03-compile-fix.md"
+            ".github/prompts/04-generate-summary.md"
+          )
+          
+          for file in "${REQUIRED_FILES[@]}"; do
+            if [ ! -f "$file" ]; then
+              echo "❌ Required file missing: $file" >> $GITHUB_STEP_SUMMARY
+              echo "❌ Required prompt file missing: $file"
+              exit 1
+            else
+              echo "✅ Found: $file" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          
+          echo "✅ All pre-flight checks passed!" >> $GITHUB_STEP_SUMMARY
+
       - name: Run business flow analysis
         id: analyze
         uses: anthropics/claude-code-base-action@beta
@@ -45,10 +80,19 @@ jobs:
           allowed_tools: |
             View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
           max_turns: "25"
+        env:
+          ACTIONS_STEP_DEBUG: true
 
       - name: Validate flows.json
         id: validate
         run: |
+          set -e
+          echo "## 📋 Validation Results" >> $GITHUB_STEP_SUMMARY
+          
+          # Debug: List all files created
+          echo "### Files created by Claude:" >> $GITHUB_STEP_SUMMARY
+          find . -name "*.json" -o -name "*.md" -newer .git 2>/dev/null | head -20 >> $GITHUB_STEP_SUMMARY || echo "No new files found" >> $GITHUB_STEP_SUMMARY
+          
           if [ -f "flows.json" ]; then
             echo "✅ flows.json created successfully"
             
@@ -100,6 +144,24 @@ jobs:
             echo "matrix={\"flow\": []}" >> $GITHUB_OUTPUT
             echo "⚠️ No business flows found - skipping instrumentation phase" >> $GITHUB_STEP_SUMMARY
           fi
+
+      - name: Debug information on failure
+        if: failure()
+        run: |
+          echo "## 🚨 Debug Information" >> $GITHUB_STEP_SUMMARY
+          echo "### Working Directory Contents:" >> $GITHUB_STEP_SUMMARY
+          ls -la >> $GITHUB_STEP_SUMMARY
+          
+          echo "### .github/prompts/ Contents:" >> $GITHUB_STEP_SUMMARY
+          ls -la .github/prompts/ >> $GITHUB_STEP_SUMMARY || echo "Directory not found" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Recent Files:" >> $GITHUB_STEP_SUMMARY
+          find . -type f -mmin -10 | head -20 >> $GITHUB_STEP_SUMMARY || echo "No recent files" >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Environment:" >> $GITHUB_STEP_SUMMARY
+          echo "- GitHub Event: ${{ github.event_name }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Repository: ${{ github.repository }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Ref: ${{ github.ref }}" >> $GITHUB_STEP_SUMMARY
 
   # ========================================================================
   # PHASE 2: Instrument Flows (Parallel Matrix)
