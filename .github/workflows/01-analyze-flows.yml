@@ -1,0 +1,118 @@
+name: "01 - Analyze Business Flows"
+
+on:
+  workflow_call:
+    inputs:
+      trigger_ref:
+        description: 'Git reference to checkout'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      matrix:
+        description: 'Matrix of flows for parallel instrumentation'
+        value: ${{ jobs.analyze.outputs.matrix }}
+      has-flows:
+        description: 'Whether flows were found'
+        value: ${{ jobs.analyze.outputs.has-flows }}
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  analyze:
+    name: 🔍 Analyze Business Flows
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has-flows: ${{ steps.set-matrix.outputs.has-flows }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.trigger_ref || github.ref }}
+
+      - name: Run business flow analysis
+        id: analyze
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/01-analyze-flows.md
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Write,BatchTool
+          max_turns: "25"
+
+      - name: Validate flows.json
+        id: validate
+        run: |
+          if [ -f "flows.json" ]; then
+            echo "✅ flows.json created successfully"
+            
+            # Validate JSON format
+            if jq empty flows.json 2>/dev/null; then
+              echo "✅ flows.json is valid JSON"
+              
+              # Check if it has the expected structure
+              if jq -e '.flows | type == "array"' flows.json >/dev/null; then
+                FLOW_COUNT=$(jq -r '.flows | length' flows.json)
+                echo "✅ Found $FLOW_COUNT business flows"
+                echo "flows-found=true" >> $GITHUB_OUTPUT
+                
+                # Show flow summary
+                echo "## 📊 Business Flows Identified" >> $GITHUB_STEP_SUMMARY
+                jq -r '.flows[] | "- **\(.name)** (\(.criticality)) - \(.description)"' flows.json >> $GITHUB_STEP_SUMMARY
+              else
+                echo "❌ flows.json missing 'flows' array"
+                echo "flows-found=false" >> $GITHUB_OUTPUT
+              fi
+            else
+              echo "❌ flows.json is not valid JSON"
+              echo "flows-found=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "❌ flows.json not found"
+            echo "flows-found=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Upload flows configuration
+        if: steps.validate.outputs.flows-found == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: flows-config
+          path: |
+            flows.json
+            docs/flows/
+          retention-days: 1
+
+      - name: Set matrix for instrumentation
+        id: set-matrix
+        run: |
+          if [ "${{ steps.validate.outputs.flows-found }}" == "true" ]; then
+            echo "has-flows=true" >> $GITHUB_OUTPUT
+            echo "matrix=$(cat flows.json | jq -c '{flow: [.flows[].name]}')" >> $GITHUB_OUTPUT
+            
+            # Log matrix for debugging
+            echo "## 🎯 Instrumentation Matrix" >> $GITHUB_STEP_SUMMARY
+            echo "The following flows will be instrumented in parallel:" >> $GITHUB_STEP_SUMMARY
+            cat flows.json | jq -r '.flows[].name' | sed 's/^/- /' >> $GITHUB_STEP_SUMMARY
+          else
+            echo "has-flows=false" >> $GITHUB_OUTPUT
+            echo "matrix={\"flow\": []}" >> $GITHUB_OUTPUT
+            echo "⚠️ No business flows found - skipping instrumentation phase" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload analysis logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: analysis-logs
+          path: |
+            *.log
+            *.txt
+          retention-days: 1
+          if-no-files-found: ignore

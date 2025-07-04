@@ -1,0 +1,250 @@
+name: "03 - Compile & Fix"
+
+on:
+  workflow_call:
+    inputs:
+      trigger_ref:
+        description: 'Git reference to checkout'
+        required: false
+        type: string
+        default: ''
+    outputs:
+      compilation-success:
+        description: 'Whether compilation was successful'
+        value: ${{ jobs.compile-fix.outputs.compilation-success }}
+      fixes-applied:
+        description: 'Number of fix attempts made'
+        value: ${{ jobs.compile-fix.outputs.fixes-applied }}
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  compile-fix:
+    name: 🔧 Compile & Fix
+    runs-on: ubuntu-latest
+    outputs:
+      compilation-success: ${{ steps.final-check.outputs.success }}
+      fixes-applied: ${{ steps.compile-loop.outputs.attempts }}
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.trigger_ref || github.ref }}
+
+      - name: Download all instrumented code
+        uses: actions/download-artifact@v4
+        with:
+          pattern: instrumented-*
+          merge-multiple: true
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Initial dependency check
+        run: |
+          echo "## 🔍 Initial Setup" >> $GITHUB_STEP_SUMMARY
+          echo "### Go Version" >> $GITHUB_STEP_SUMMARY
+          go version >> $GITHUB_STEP_SUMMARY
+          
+          echo "### Dependencies" >> $GITHUB_STEP_SUMMARY
+          if [ -f "go.mod" ]; then
+            echo "✅ go.mod found" >> $GITHUB_STEP_SUMMARY
+            
+            # Ensure OpenTelemetry dependencies are available
+            if ! go list -m go.opentelemetry.io/otel >/dev/null 2>&1; then
+              echo "📦 Adding OpenTelemetry dependencies..." >> $GITHUB_STEP_SUMMARY
+              go mod tidy
+            fi
+          else
+            echo "⚠️ No go.mod found - may need to initialize" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Compile and fix loop
+        id: compile-loop
+        run: |
+          ATTEMPT=0
+          MAX_ATTEMPTS=5
+          SUCCESS=false
+          
+          echo "## 🔧 Compilation Process" >> $GITHUB_STEP_SUMMARY
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            ((ATTEMPT++))
+            echo "### Attempt $ATTEMPT" >> $GITHUB_STEP_SUMMARY
+            echo "::group::Compilation attempt $ATTEMPT"
+            
+            # Clear previous logs
+            rm -f compile.log compile_errors.txt
+            
+            # Try to compile
+            if go build ./... 2>&1 | tee compile.log; then
+              echo "✅ Compilation successful on attempt $ATTEMPT!" >> $GITHUB_STEP_SUMMARY
+              SUCCESS=true
+              echo "::endgroup::"
+              break
+            else
+              echo "❌ Compilation failed on attempt $ATTEMPT" >> $GITHUB_STEP_SUMMARY
+              echo "::endgroup::"
+              
+              # Extract and format errors
+              echo "::group::Compilation errors"
+              cat compile.log
+              echo "::endgroup::"
+              
+              # If not the last attempt, prepare for Claude fix
+              if [ $ATTEMPT -lt $MAX_ATTEMPTS ]; then
+                echo "🤖 Preparing to call Claude for error fixes..." >> $GITHUB_STEP_SUMMARY
+                
+                # Create a structured error report
+                cat > compile_errors.txt << EOF
+          COMPILATION ERRORS - Attempt $ATTEMPT
+          =====================================
+          
+          $(cat compile.log)
+          
+          Please analyze these compilation errors and fix them systematically.
+          Focus on:
+          1. Missing imports
+          2. Function signature mismatches
+          3. Type errors
+          4. Unused variables
+          5. Package-level issues
+          EOF
+                
+                # Call Claude to fix errors
+                echo "::group::Claude error fixing"
+                echo "Calling Claude to fix compilation errors..."
+                echo "::endgroup::"
+              fi
+            fi
+          done
+          
+          echo "attempts=$ATTEMPT" >> $GITHUB_OUTPUT
+          echo "success=$SUCCESS" >> $GITHUB_OUTPUT
+          
+          if [ "$SUCCESS" = "false" ]; then
+            echo "❌ Failed to compile after $MAX_ATTEMPTS attempts" >> $GITHUB_STEP_SUMMARY
+            exit 1
+          fi
+
+      - name: Fix compilation errors
+        if: failure()
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/03-compile-fix.md
+          allowed_tools: |
+            View,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "25"
+
+      - name: Retry compilation after fix
+        if: failure()
+        id: retry-compile
+        continue-on-error: true
+        run: |
+          echo "## 🔄 Retry After Claude Fix" >> $GITHUB_STEP_SUMMARY
+          
+          if go build ./... 2>&1 | tee retry_compile.log; then
+            echo "✅ Compilation successful after Claude fix!" >> $GITHUB_STEP_SUMMARY
+            echo "success=true" >> $GITHUB_OUTPUT
+          else
+            echo "❌ Compilation still failing after Claude fix" >> $GITHUB_STEP_SUMMARY
+            echo "success=false" >> $GITHUB_OUTPUT
+            
+            echo "### Remaining Errors" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat retry_compile.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Run additional checks
+        id: additional-checks
+        continue-on-error: true
+        run: |
+          echo "## 🧪 Additional Checks" >> $GITHUB_STEP_SUMMARY
+          
+          # Go vet
+          echo "### go vet" >> $GITHUB_STEP_SUMMARY
+          if go vet ./... 2>&1 | tee vet.log; then
+            echo "✅ go vet passed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ go vet found issues:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat vet.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Go fmt check
+          echo "### go fmt" >> $GITHUB_STEP_SUMMARY
+          if [ -z "$(gofmt -l .)" ]; then
+            echo "✅ Code is properly formatted" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Code formatting issues found:" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            gofmt -l . >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          # Test compilation (if tests exist)
+          if find . -name "*_test.go" | head -1 | grep -q .; then
+            echo "### Test Compilation" >> $GITHUB_STEP_SUMMARY
+            if go test -c ./... >/dev/null 2>&1; then
+              echo "✅ Tests compile successfully" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "⚠️ Test compilation issues found" >> $GITHUB_STEP_SUMMARY
+            fi
+          fi
+
+      - name: Final compilation check
+        id: final-check
+        run: |
+          echo "## 🎯 Final Verification" >> $GITHUB_STEP_SUMMARY
+          
+          if go build ./... 2>&1 | tee final_compile.log; then
+            echo "✅ Final compilation successful!" >> $GITHUB_STEP_SUMMARY
+            echo "success=true" >> $GITHUB_OUTPUT
+            
+            # Show build stats
+            echo "### Build Statistics" >> $GITHUB_STEP_SUMMARY
+            echo "- **Attempts:** ${{ steps.compile-loop.outputs.attempts }}" >> $GITHUB_STEP_SUMMARY
+            echo "- **Final Status:** ✅ Success" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ Final compilation failed" >> $GITHUB_STEP_SUMMARY
+            echo "success=false" >> $GITHUB_OUTPUT
+            
+            echo "### Final Errors" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            cat final_compile.log >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            
+            exit 1
+          fi
+
+      - name: Upload compilation logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compilation-logs
+          path: |
+            *.log
+            *.txt
+          retention-days: 1
+
+      - name: Upload final compiled code
+        if: steps.final-check.outputs.success == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-code
+          path: |
+            **/*.go
+            go.mod
+            go.sum
+          retention-days: 1
