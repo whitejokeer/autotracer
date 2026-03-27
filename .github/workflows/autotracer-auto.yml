@@ -1,34 +1,91 @@
-# AutoTracer Automatic Workflow (Optional)
+# .github/workflows/autotracer.yml
 name: AutoTracer Automatic Analysis
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
+  workflow_dispatch: {}
+  issue_comment:
+    types: [created]
 
 jobs:
   autotracer-analysis:
+    if: >
+      (github.event_name == 'issue_comment' && contains(github.event.comment.body, '/autotracer'))
+      || github.event_name == 'pull_request'
+      || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
-    
+
+    permissions:
+      contents: write          # permitir commits / pushes
+      pull-requests: write     # comentar PRs
+      id-token: write
+
     steps:
+      # 1. Checkout
       - name: Checkout code
         uses: actions/checkout@v4
-        
-      - name: Run AutoTracer Analysis
-        uses: anthropics/claude-3-5-sonnet@v1
         with:
-          claude-project: ${{ secrets.CLAUDE_PROJECT_ID }}
-          prompt-file: .github/prompts/autotracer_prompt.md
-          files: |
-            **/*.go
-            **/*.py
-            **/*.js
-            **/*.ts
-            **/*.java
-            **/*.c
-            **/*.cpp
-            **/*.cs
-            **/*.rb
-            **/*.php
-          auto-comment: true
+          ref: ${{ github.event.pull_request.head.ref || github.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # 2. Ejecutar AutoTracer (Claude Code)
+      - name: Run AutoTracer Analysis
+        id: autotracer
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt_file: .github/prompts/autotracer_prompt.md
+          allowed_tools: |
+            View,Glob,Grep,LS,Read,Edit,MultiEdit,Write,BatchTool
+          max_turns: "20"
+
+      # # 3. Validar compilación Go
+      # - name: Install Go
+      #   if: always()
+      #   uses: actions/setup-go@v5
+      #   with:
+      #     go-version: "1.22"
+
+      # - name: go vet
+      #   if: always()
+      #   run: go vet ./...
+
+      # 4. Commit & push si hay cambios
+      - name: Commit and push changes
+        if: |
+          always() && (
+            github.event_name == 'push' ||
+            github.event_name == 'workflow_dispatch' ||
+            github.event.pull_request.head.repo.full_name == github.repository
+          )
+        run: |
+          set -e
+          git config --local user.email "actions@github.com"
+          git config --local user.name  "GitHub Actions"
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m "chore: AutoTracer OpenTelemetry instrumentation [skip ci]"
+            git push
+          else
+            echo "No changes to commit"
+          fi
+
+      # 5. Si el PR viene de un fork sin permisos, sube el parche como artefacto
+      - name: Upload patch (fork pull request)
+        if: |
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name != github.repository &&
+          steps.autotracer.outcome == 'success'
+        run: |
+          set -e
+          if ! git diff --quiet; then
+            git diff > autotracer.patch
+            gh release upload --clobber temp-$(date +%s) autotracer.patch
+            echo "::warning::Este PR es de un fork: los cambios se adjuntaron como artefacto .patch"
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
